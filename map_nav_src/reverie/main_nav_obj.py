@@ -316,6 +316,7 @@ def feedtta_valid(args, train_env, val_envs, rank=-1):
 
     #     return trainable_names
     def _set_trainable_tta_params(model):
+        # freeze all first
         for _, p in model.named_parameters():
             p.requires_grad = False
 
@@ -323,7 +324,7 @@ def feedtta_valid(args, train_env, val_envs, rank=-1):
         for n, p in model.named_parameters():
             lname = n.lower()
 
-            # freeze language + visual encoders
+            # freeze language / visual-ish parts
             if (
                 ("lang_encoder" in lname) or
                 ("img_embeddings" in lname) or
@@ -334,10 +335,11 @@ def feedtta_valid(args, train_env, val_envs, rank=-1):
             ):
                 continue
 
-            # update from cross-modal encoder onward
+            # only open last few cross-modal / fusion / prediction layers
             keep = (
-                ("x_layers" in lname) or
-                ("global_encoder" in lname) or
+                ("local_encoder.encoder.x_layers.3" in lname) or
+                ("local_encoder.encoder.x_layers.4" in lname) or
+                ("local_encoder.encoder.x_layers.5" in lname) or
                 ("sap_fuse" in lname) or
                 ("local_sap_head" in lname) or
                 ("global_sap_head" in lname) or
