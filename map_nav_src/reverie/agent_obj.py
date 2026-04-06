@@ -315,29 +315,37 @@ class GMapObjectNavAgent(Seq2SeqAgent):
         # Language input: txt_ids, txt_masks
         language_inputs = self._language_variable(obs)
         txt_embeds = self.vln_bert('language', language_inputs)
-    
+
         # Initialization the tracking state
         ended = np.array([False] * batch_size)
         just_ended = np.array([False] * batch_size)
 
         # Init the logs
-        masks = []
-        entropys = []
-        ml_loss = 0.     
-        og_loss = 0. 
+        ml_loss = 0.
+        og_loss = 0.
+        self.loss = 0.
 
-        log_probs = []  
+        # ===== RL buffers =====
+        log_probs = []          # list of [B]
+        entropys = []           # list of [B]
+        step_rewards = []       # list of [B]
 
         for t in range(self.args.max_action_len):
+            # IMPORTANT: reset per step
+            just_ended[:] = False
+
             for i, gmap in enumerate(gmaps):
                 if not ended[i]:
                     gmap.node_step_ids[obs[i]['viewpoint']] = t + 1
+
+            # keep old obs for progress reward
+            prev_obs = obs
 
             # graph representation
             pano_inputs = self._panorama_feature_variable(obs)
             pano_embeds, pano_masks = self.vln_bert('panorama', pano_inputs)
             avg_pano_embeds = torch.sum(pano_embeds * pano_masks.unsqueeze(2), 1) / \
-                              torch.sum(pano_masks, 1, keepdim=True)
+                            torch.sum(pano_masks, 1, keepdim=True)
 
             for i, gmap in enumerate(gmaps):
                 if not ended[i]:
@@ -353,8 +361,8 @@ class GMapObjectNavAgent(Seq2SeqAgent):
             nav_inputs = self._nav_gmap_variable(obs, gmaps)
             nav_inputs.update(
                 self._nav_vp_variable(
-                    obs, gmaps, pano_embeds, pano_inputs['cand_vpids'], 
-                    pano_inputs['view_lens'], pano_inputs['obj_lens'], 
+                    obs, gmaps, pano_embeds, pano_inputs['cand_vpids'],
+                    pano_inputs['view_lens'], pano_inputs['obj_lens'],
                     pano_inputs['nav_types'],
                 )
             )
@@ -376,65 +384,64 @@ class GMapObjectNavAgent(Seq2SeqAgent):
 
             nav_probs = torch.softmax(nav_logits, 1)
             obj_logits = nav_outs['obj_logits']
-            
+
             # update graph
             for i, gmap in enumerate(gmaps):
                 if not ended[i]:
                     i_vp = obs[i]['viewpoint']
-                    # update i_vp: stop and object grounding scores
                     i_objids = obs[i]['obj_ids']
-                    i_obj_logits = obj_logits[i, pano_inputs['view_lens'][i]+1:]
+                    i_obj_logits = obj_logits[i, pano_inputs['view_lens'][i] + 1:]
                     gmap.node_stop_scores[i_vp] = {
                         'stop': nav_probs[i, 0].data.item(),
                         'og': i_objids[torch.argmax(i_obj_logits)] if len(i_objids) > 0 else None,
                         'og_details': {'objids': i_objids, 'logits': i_obj_logits[:len(i_objids)]},
                     }
-                                        
+
             if train_ml is not None:
                 # Supervised training
                 nav_targets = self._teacher_action(
-                    obs, nav_vpids, ended, 
+                    obs, nav_vpids, ended,
                     visited_masks=nav_inputs['gmap_visited_masks'] if self.args.fusion != 'local' else None
                 )
-                # print(t, nav_logits, nav_targets)
                 ml_loss += self.criterion(nav_logits, nav_targets)
-                # print(t, 'ml_loss', ml_loss.item(), self.criterion(nav_logits, nav_targets).item())
+
                 if self.args.fusion in ['avg', 'dynamic'] and self.args.loss_nav_3:
-                    # add global and local losses
-                    ml_loss += self.criterion(nav_outs['global_logits'], nav_targets)    # global
+                    ml_loss += self.criterion(nav_outs['global_logits'], nav_targets)
                     local_nav_targets = self._teacher_action(
                         obs, nav_inputs['vp_cand_vpids'], ended, visited_masks=None
                     )
-                    ml_loss += self.criterion(nav_outs['local_logits'], local_nav_targets)  # local
-                # objec grounding 
+                    ml_loss += self.criterion(nav_outs['local_logits'], local_nav_targets)
+
                 obj_targets = self._teacher_object(obs, ended, pano_inputs['view_lens'])
-                # print(t, obj_targets[6], obj_logits[6], obs[6]['obj_ids'], pano_inputs['view_lens'][i], obs[6]['gt_obj_id'])
                 og_loss += self.criterion(obj_logits, obj_targets)
-                # print(F.cross_entropy(obj_logits, obj_targets, reduction='none'))
-                # print(t, 'og_loss', og_loss.item(), self.criterion(obj_logits, obj_targets).item())
-                                                   
-            # Determinate the next navigation viewpoint
+
+            # Determine the next navigation viewpoint
             if self.feedback == 'teacher':
-                a_t = nav_targets                 # teacher forcing
+                a_t = nav_targets
             elif self.feedback == 'argmax':
-                _, a_t = nav_logits.max(1)        # student forcing - argmax
-                a_t = a_t.detach() 
+                _, a_t = nav_logits.max(1)
+                a_t = a_t.detach()
             elif self.feedback == 'sample':
                 c = torch.distributions.Categorical(nav_probs)
-                self.logs['entropy'].append(c.entropy().sum().item())            # For log
-                entropys.append(c.entropy())                                     # For optimization
-                a_t = c.sample()
-                log_prob = c.log_prob(a_t)          #add log_prob
+                entropy = c.entropy()          # [B]
+                a_t = c.sample()               # [B]
+                log_prob = c.log_prob(a_t)     # [B]
+
+                self.logs['entropy'].append(entropy.sum().item())
+                entropys.append(entropy)
                 log_probs.append(log_prob)
 
                 a_t = a_t.detach()
             elif self.feedback == 'expl_sample':
                 _, a_t = nav_probs.max(1)
-                rand_explores = np.random.rand(batch_size, ) > self.args.expl_max_ratio  # hyper-param
+                rand_explores = np.random.rand(batch_size,) > self.args.expl_max_ratio
                 if self.args.fusion == 'local':
                     cpu_nav_masks = nav_inputs['vp_nav_masks'].data.cpu().numpy()
                 else:
-                    cpu_nav_masks = (nav_inputs['gmap_masks'] * nav_inputs['gmap_visited_masks'].logical_not()).data.cpu().numpy()
+                    cpu_nav_masks = (
+                        nav_inputs['gmap_masks'] *
+                        nav_inputs['gmap_visited_masks'].logical_not()
+                    ).data.cpu().numpy()
                 for i in range(batch_size):
                     if rand_explores[i]:
                         cand_a_t = np.arange(len(cpu_nav_masks[i]))[cpu_nav_masks[i]]
@@ -447,19 +454,21 @@ class GMapObjectNavAgent(Seq2SeqAgent):
             if self.feedback == 'teacher':
                 a_t_stop = [ob['viewpoint'] == ob['gt_path'][-1] for ob in obs]
             else:
-                a_t_stop = a_t == 0
+                a_t_stop = (a_t == 0)
 
             # Prepare environment action
-            cpu_a_t = []  
+            cpu_a_t = []
             for i in range(batch_size):
                 if a_t_stop[i] or ended[i] or nav_inputs['no_vp_left'][i] or (t == self.args.max_action_len - 1):
                     cpu_a_t.append(None)
                     just_ended[i] = True
                 else:
-                    cpu_a_t.append(nav_vpids[i][a_t[i]])   
+                    cpu_a_t.append(nav_vpids[i][a_t[i]])
 
             # Make action and get the new state
             self.make_equiv_action(cpu_a_t, gmaps, obs, traj)
+
+            # for stopped samples, choose best stop node / object
             for i in range(batch_size):
                 if (not ended[i]) and just_ended[i]:
                     stop_node, stop_score = None, {'stop': -float('inf'), 'og': None}
@@ -485,39 +494,97 @@ class GMapObjectNavAgent(Seq2SeqAgent):
                 if not ended[i]:
                     gmaps[i].update_graph(ob)
 
+            # ===== step reward for RL =====
+            if train_rl and self.feedback == 'sample':
+                cur_step_reward = torch.zeros(batch_size, dtype=torch.float32, device=device)
+
+                for i in range(batch_size):
+                    if ended[i]:
+                        continue
+
+                    scan = prev_obs[i]['scan']
+                    goal_vp = prev_obs[i]['gt_path'][-1]
+                    prev_vp = prev_obs[i]['viewpoint']
+                    cur_vp = obs[i]['viewpoint']
+
+                    prev_dist = self.env.shortest_distances[scan][prev_vp][goal_vp]
+                    cur_dist = self.env.shortest_distances[scan][cur_vp][goal_vp]
+
+                    # progress reward: moving closer is positive
+                    progress = float(prev_dist - cur_dist)
+                    reward = 0.5 * progress
+
+                    # small step penalty to discourage wandering
+                    reward -= 0.02
+
+                    # stopping bonus / penalty
+                    if just_ended[i]:
+                        nav_success = cur_vp in obs[i]['gt_end_vps']
+                        pred_obj = traj[i]['pred_objid']
+                        obj_success = str(pred_obj) == str(obs[i]['gt_obj_id'])
+
+                        if nav_success:
+                            reward += 1.0
+                        else:
+                            reward -= 0.5
+
+                        if obj_success:
+                            reward += 1.0
+                        else:
+                            reward -= 0.5
+
+                        if nav_success and obj_success:
+                            reward += 1.0
+
+                    cur_step_reward[i] = reward
+
+                step_rewards.append(cur_step_reward)
+
             ended[:] = np.logical_or(ended, np.array([x is None for x in cpu_a_t]))
 
             # Early exit if all ended
             if ended.all():
                 break
-        
-        
-        '''Add FEEDTTA'''
-        # ===== FEEDTTA: episodic binary feedback =====
+
+        # ===== FEEDTTA RL loss =====
         if train_rl and len(log_probs) > 0:
-            rewards = []
-
-            for i in range(batch_size):
-                final_vp = traj[i]['path'][-1][-1]
-                nav_success = final_vp in obs[i]['gt_end_vps']
-                obj_success = str(traj[i]['pred_objid']) == str(traj[i]['gt_obj_id'])
-                success = nav_success and obj_success
-                reward = 1.0 if success else -1.0
-                rewards.append(reward)
-
-            rewards = torch.tensor(rewards, dtype=torch.float32, device=device)
-
             # [B, T]
             log_probs_tensor = torch.stack(log_probs, dim=1)
+            entropys_tensor = torch.stack(entropys, dim=1) if len(entropys) > 0 else None
+            rewards_tensor = torch.stack(step_rewards, dim=1) if len(step_rewards) > 0 else None
 
-            # [B]
-            log_probs_sum = log_probs_tensor.sum(dim=1)
+            if rewards_tensor is None:
+                rewards_tensor = torch.zeros_like(log_probs_tensor)
 
-            # REINFORCE with episodic feedback
-            policy_loss = -(rewards * log_probs_sum).mean()
+            # discounted return
+            gamma = getattr(self.args, 'gamma', 0.9)
+            returns = torch.zeros_like(rewards_tensor)
+            running = torch.zeros(batch_size, dtype=torch.float32, device=device)
+            for t in reversed(range(rewards_tensor.size(1))):
+                running = rewards_tensor[:, t] + gamma * running
+                returns[:, t] = running
 
-            self.loss = policy_loss
-            self.logs['RL_loss'].append(policy_loss.item())
+            # normalize returns -> advantage
+            adv = returns
+            adv = (adv - adv.mean()) / (adv.std() + 1e-6)
+
+            policy_loss = -(adv * log_probs_tensor).mean()
+
+            if entropys_tensor is not None:
+                entropy_coef = getattr(self.args, 'entropy_coef', 0.01)
+                entropy_loss = -entropy_coef * entropys_tensor.mean()
+            else:
+                entropy_loss = 0.0
+
+            rl_loss = policy_loss + entropy_loss
+            self.loss += rl_loss
+
+            self.logs['RL_loss'].append(float(rl_loss.item()))
+            self.logs['policy_loss'].append(float(policy_loss.item()))
+            if entropys_tensor is not None:
+                self.logs['entropy_loss'].append(float(
+                    entropy_loss.item() if hasattr(entropy_loss, 'item') else entropy_loss
+                ))
 
         if train_ml is not None:
             ml_loss = ml_loss * train_ml / batch_size

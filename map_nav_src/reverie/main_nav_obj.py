@@ -365,9 +365,9 @@ def feedtta_valid(args, train_env, val_envs, rank=-1):
     print("sgr_p        =", sgr_p)
     print("sgr_alpha    =", sgr_alpha)
     print("trainable params in vln_bert =", len(trainable_names))
-    print("first 40 trainable names:")
-    for n in trainable_names[:40]:
-        print("  ", n)
+    # print("first 40 trainable names:")
+    # for n in trainable_names[:40]:
+    #     print("  ", n)
 
     if default_gpu:
         os.makedirs(args.log_dir, exist_ok=True)
