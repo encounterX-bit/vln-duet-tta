@@ -293,8 +293,29 @@ def feedtta_valid(args, train_env, val_envs, rank=-1):
     import torch
     from collections import defaultdict
 
+    # def _set_trainable_tta_params(model):
+    #     # Freeze everything first
+    #     for _, p in model.named_parameters():
+    #         p.requires_grad = False
+
+    #     trainable_names = []
+    #     for n, p in model.named_parameters():
+    #         lname = n.lower()
+
+    #         # Keep cross-modal / navigation-ish blocks trainable.
+    #         # Do NOT open language encoder.
+    #         keep = (
+    #             ("local_encoder.encoder.x_layers" in lname) or
+    #             ("global_encoder" in lname) or
+    #             ("sap_fuse" in lname)
+    #         )
+
+    #         if keep and ("lang_encoder" not in lname):
+    #             p.requires_grad = True
+    #             trainable_names.append(n)
+
+    #     return trainable_names
     def _set_trainable_tta_params(model):
-        # Freeze everything first
         for _, p in model.named_parameters():
             p.requires_grad = False
 
@@ -302,15 +323,28 @@ def feedtta_valid(args, train_env, val_envs, rank=-1):
         for n, p in model.named_parameters():
             lname = n.lower()
 
-            # Keep cross-modal / navigation-ish blocks trainable.
-            # Do NOT open language encoder.
+            # freeze language + visual encoders
+            if (
+                ("lang_encoder" in lname) or
+                ("img_embeddings" in lname) or
+                ("vision_encoder" in lname) or
+                ("vis_encoder" in lname) or
+                ("pano_encoder" in lname) or
+                ("panorama" in lname)
+            ):
+                continue
+
+            # update from cross-modal encoder onward
             keep = (
-                ("local_encoder.encoder.x_layers" in lname) or
+                ("x_layers" in lname) or
                 ("global_encoder" in lname) or
-                ("sap_fuse" in lname)
+                ("sap_fuse" in lname) or
+                ("local_sap_head" in lname) or
+                ("global_sap_head" in lname) or
+                ("og_head" in lname)
             )
 
-            if keep and ("lang_encoder" not in lname):
+            if keep:
                 p.requires_grad = True
                 trainable_names.append(n)
 
