@@ -103,6 +103,18 @@ def parse_args():
         default='imitation'
     )
 
+    # FEEDTTA / online test-time adaptation
+    parser.add_argument('--tta_env_name', type=str, default='val_unseen',
+                        choices=['val_train_seen', 'val_seen', 'val_unseen'])
+    parser.add_argument('--tta_steps', type=int, default=10)
+    parser.add_argument('--tta_lr', type=float, default=5e-6)
+    parser.add_argument('--tta_grad_clip', type=float, default=1.0)
+    parser.add_argument('--tta_rollback_on_worse', action='store_true', default=True)
+
+    # SGR
+    parser.add_argument('--sgr_p', type=float, default=0.05)
+    parser.add_argument('--sgr_alpha', type=float, default=-0.2)
+
     args, _ = parser.parse_known_args()
 
     args = postprocess_args(args)

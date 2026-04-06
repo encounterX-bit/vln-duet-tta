@@ -269,6 +269,7 @@ def feedtta_valid(args, train_env, val_envs, rank=-1):
         for n, p in model.named_parameters():
             lname = n.lower()
 
+            # freeze language / pure visual encoders
             if (
                 ('lang_encoder' in lname) or
                 ('img_embeddings' in lname) or
@@ -279,7 +280,10 @@ def feedtta_valid(args, train_env, val_envs, rank=-1):
             ):
                 continue
 
+            # open cross-modal and heads
             keep = (
+                ('x_layers' in lname) or
+                ('cross' in lname) or
                 ('sap_fuse' in lname) or
                 ('local_sap_head' in lname) or
                 ('global_sap_head' in lname) or

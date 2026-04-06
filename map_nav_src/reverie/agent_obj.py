@@ -515,17 +515,19 @@ class GMapObjectNavAgent(Seq2SeqAgent):
 
             # [B, T]
             log_probs_tensor = torch.stack(log_probs, dim=1)
-
-            # sum over the whole trajectory
             log_probs_sum = log_probs_tensor.sum(dim=1)   # [B]
 
-            # simple baseline by centering rewards
-            adv = rewards - rewards.mean()
+            # ===== FIX: batch_size=1 不要减 mean =====
+            if batch_size == 1:
+                adv = rewards
+            else:
+                adv = rewards - rewards.mean()
 
             rl_loss = -(adv * log_probs_sum).mean()
             self.loss += rl_loss
-
             self.logs['RL_loss'].append(float(rl_loss.item()))
+            
+  
 
         if train_ml is not None:
             ml_loss = ml_loss * train_ml / batch_size
