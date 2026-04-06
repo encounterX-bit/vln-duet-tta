@@ -1,13 +1,72 @@
+# =========================
+# IDE / config
+# =========================
 .ftpignore
 .ftpconfig
 .vscode
 
-# Byte-compiled / optimized / DLL files
+# =========================
+# Python cache
+# =========================
 .ipynb_checkpoints/
 __pycache__/
 *.py[cod]
 *$py.class
 *.swp
 
-/datasets
-/notebooks
+# =========================
+# DATA (VERY IMPORTANT)
+# =========================
+datasets/
+files/
+
+# =========================
+# FEATURES / PRECOMPUTED
+# =========================
+*.tsv
+*.jsonl
+*.h5
+*.npz
+*.npy
+
+# =========================
+# MODEL CHECKPOINTS
+# =========================
+*.pth
+*.pt
+*.ckpt
+*.bin
+
+# =========================
+# LOGS / OUTPUT
+# =========================
+logs/
+output/
+outputs/
+runs/
+*.log
+
+# =========================
+# KAGGLE / TEMP
+# =========================
+*.zip
+*.tar
+*.tar.gz
+
+# =========================
+# SYSTEM FILES
+# =========================
+.DS_Store
+Thumbs.db
+
+# =========================
+# ENV
+# =========================
+.env
+.venv/
+venv/
+
+# =========================
+# NOTEBOOKS (optional)
+# =========================
+notebooks/

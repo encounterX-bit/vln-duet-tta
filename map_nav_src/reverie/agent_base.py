@@ -117,7 +117,9 @@ class Seq2SeqAgent(BaseAgent):
             self.critic = DDP(self.critic, device_ids=[self.rank], find_unused_parameters=True)
 
         self.models = (self.vln_bert, self.critic)
-        self.device = torch.device('cuda:%d'%self.rank) 
+        self.device = torch.device(
+            f'cuda:{self.rank}' if torch.cuda.is_available() else 'cpu'
+        )
 
         # Optimizers
         if self.args.optim == 'rms':
@@ -228,7 +230,7 @@ class Seq2SeqAgent(BaseAgent):
 
     def load(self, path):
         ''' Loads parameters (but not training state) '''
-        states = torch.load(path)
+        states = torch.load(path, map_location=torch.device("cuda" if torch.cuda.is_available() else "cpu"))
 
         def recover_state(name, model, optimizer):
             state = model.state_dict()

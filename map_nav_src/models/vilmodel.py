@@ -658,6 +658,8 @@ class ClsPrediction(nn.Module):
         return self.net(x)
 
 class GlocalTextPathNavCMT(BertPreTrainedModel):
+    # compatibility for newer transformers
+    all_tied_weights_keys = {}
     def __init__(self, config):
         super().__init__(config)
         self.embeddings = BertEmbeddings(config)

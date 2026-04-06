@@ -6,9 +6,10 @@ import random
 import math
 import time
 from collections import defaultdict
-import line_profiler
+# import line_profiler
 
 import torch
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 import torch.nn as nn
 from torch import optim
 import torch.nn.functional as F
@@ -27,8 +28,8 @@ from models.ops import pad_tensors_wgrad
 class GMapObjectNavAgent(Seq2SeqAgent):
     
     def _build_model(self):
-        self.vln_bert = VLNBert(self.args).cuda()
-        self.critic = Critic(self.args).cuda()
+        self.vln_bert = VLNBert(self.args).to(device)
+        self.critic = Critic(self.args).to(device)
         # buffer
         self.scanvp_cands = {}
 
@@ -41,8 +42,8 @@ class GMapObjectNavAgent(Seq2SeqAgent):
             seq_tensor[i, :seq_lengths[i]] = ob['instr_encoding']
             mask[i, :seq_lengths[i]] = True
 
-        seq_tensor = torch.from_numpy(seq_tensor).long().cuda()
-        mask = torch.from_numpy(mask).cuda()
+        seq_tensor = torch.from_numpy(seq_tensor).long().to(device)
+        mask = torch.from_numpy(mask).to(device)
         return {
             'txt_ids': seq_tensor, 'txt_masks': mask
         }
@@ -89,12 +90,12 @@ class GMapObjectNavAgent(Seq2SeqAgent):
             batch_obj_lens.append(len(ob['obj_img_fts']))
 
         # pad features to max_len
-        batch_view_img_fts = pad_tensors(batch_view_img_fts).cuda()
-        batch_obj_img_fts = pad_tensors(batch_obj_img_fts).cuda()
-        batch_loc_fts = pad_tensors(batch_loc_fts).cuda()
-        batch_nav_types = pad_sequence(batch_nav_types, batch_first=True, padding_value=0).cuda()
-        batch_view_lens = torch.LongTensor(batch_view_lens).cuda()
-        batch_obj_lens = torch.LongTensor(batch_obj_lens).cuda()
+        batch_view_img_fts = pad_tensors(batch_view_img_fts).to(device)
+        batch_obj_img_fts = pad_tensors(batch_obj_img_fts).to(device)
+        batch_loc_fts = pad_tensors(batch_loc_fts).to(device)
+        batch_nav_types = pad_sequence(batch_nav_types, batch_first=True, padding_value=0).to(device)
+        batch_view_lens = torch.LongTensor(batch_view_lens).to(device)
+        batch_obj_lens = torch.LongTensor(batch_obj_lens).to(device)
 
         return {
             'view_img_fts': batch_view_img_fts, 'obj_img_fts': batch_obj_img_fts, 
@@ -152,17 +153,17 @@ class GMapObjectNavAgent(Seq2SeqAgent):
 
         # collate
         batch_gmap_lens = torch.LongTensor(batch_gmap_lens)
-        batch_gmap_masks = gen_seq_masks(batch_gmap_lens).cuda()
+        batch_gmap_masks = gen_seq_masks(batch_gmap_lens).to(device)
         batch_gmap_img_embeds = pad_tensors_wgrad(batch_gmap_img_embeds)
-        batch_gmap_step_ids = pad_sequence(batch_gmap_step_ids, batch_first=True).cuda()
-        batch_gmap_pos_fts = pad_tensors(batch_gmap_pos_fts).cuda()
-        batch_gmap_visited_masks = pad_sequence(batch_gmap_visited_masks, batch_first=True).cuda()
+        batch_gmap_step_ids = pad_sequence(batch_gmap_step_ids, batch_first=True).to(device)
+        batch_gmap_pos_fts = pad_tensors(batch_gmap_pos_fts).to(device)
+        batch_gmap_visited_masks = pad_sequence(batch_gmap_visited_masks, batch_first=True).to(device)
 
         max_gmap_len = max(batch_gmap_lens)
         gmap_pair_dists = torch.zeros(batch_size, max_gmap_len, max_gmap_len).float()
         for i in range(batch_size):
             gmap_pair_dists[i, :batch_gmap_lens[i], :batch_gmap_lens[i]] = batch_gmap_pair_dists[i]
-        gmap_pair_dists = gmap_pair_dists.cuda()
+        gmap_pair_dists = gmap_pair_dists.to(device)
 
         return {
             'gmap_vpids': batch_gmap_vpids, 'gmap_img_embeds': batch_gmap_img_embeds, 
@@ -196,10 +197,10 @@ class GMapObjectNavAgent(Seq2SeqAgent):
             vp_pos_fts[1:len(cur_cand_pos_fts)+1, 7:] = cur_cand_pos_fts
             batch_vp_pos_fts.append(torch.from_numpy(vp_pos_fts))
 
-        batch_vp_pos_fts = pad_tensors(batch_vp_pos_fts).cuda()
+        batch_vp_pos_fts = pad_tensors(batch_vp_pos_fts).to(device)
 
-        vp_nav_masks = torch.cat([torch.ones(batch_size, 1).bool().cuda(), nav_types == 1], 1)
-        vp_obj_masks = torch.cat([torch.zeros(batch_size, 1).bool().cuda(), nav_types == 2], 1)
+        vp_nav_masks = torch.cat([torch.ones(batch_size, 1).bool().to(device), nav_types == 1], 1)
+        vp_obj_masks = torch.cat([torch.zeros(batch_size, 1).bool().to(device), nav_types == 2], 1)
 
         return {
             'vp_img_embeds': vp_img_embeds,
@@ -240,7 +241,7 @@ class GMapObjectNavAgent(Seq2SeqAgent):
                     if min_idx == self.args.ignoreid:
                         print('scan %s: all vps are searched' % (scan))
 
-        return torch.from_numpy(a).cuda()
+        return torch.from_numpy(a).to(device)
 
     def _teacher_object(self, obs, ended, view_lens):
         targets = np.zeros(len(obs), dtype=np.int64)
@@ -258,7 +259,7 @@ class GMapObjectNavAgent(Seq2SeqAgent):
                         if str(obj_id) == str(ob['gt_obj_id']):
                             targets[i] = j + view_lens[i] + 1
                             break
-        return torch.from_numpy(targets).cuda()
+        return torch.from_numpy(targets).to(device)
 
     def make_equiv_action(self, a_t, gmaps, obs, traj=None):
         """
@@ -307,6 +308,7 @@ class GMapObjectNavAgent(Seq2SeqAgent):
             'instr_id': ob['instr_id'],
             'path': [[ob['viewpoint']]],
             'pred_objid': None,
+            'gt_obj_id': ob['gt_obj_id'],
             'details': {},
         } for ob in obs]
 
@@ -322,7 +324,9 @@ class GMapObjectNavAgent(Seq2SeqAgent):
         masks = []
         entropys = []
         ml_loss = 0.     
-        og_loss = 0.   
+        og_loss = 0. 
+
+        log_probs = []  
 
         for t in range(self.args.max_action_len):
             for i, gmap in enumerate(gmaps):
@@ -419,7 +423,11 @@ class GMapObjectNavAgent(Seq2SeqAgent):
                 c = torch.distributions.Categorical(nav_probs)
                 self.logs['entropy'].append(c.entropy().sum().item())            # For log
                 entropys.append(c.entropy())                                     # For optimization
-                a_t = c.sample().detach() 
+                a_t = c.sample()
+                log_prob = c.log_prob(a_t)          #add log_prob
+                log_probs.append(log_prob)
+
+                a_t = a_t.detach()
             elif self.feedback == 'expl_sample':
                 _, a_t = nav_probs.max(1)
                 rand_explores = np.random.rand(batch_size, ) > self.args.expl_max_ratio  # hyper-param
@@ -436,8 +444,7 @@ class GMapObjectNavAgent(Seq2SeqAgent):
                 sys.exit('Invalid feedback option')
 
             # Determine stop actions
-            if self.feedback == 'teacher' or self.feedback == 'sample': # in training
-                # a_t_stop = [ob['viewpoint'] in ob['gt_end_vps'] for ob in obs]
+            if self.feedback == 'teacher':
                 a_t_stop = [ob['viewpoint'] == ob['gt_path'][-1] for ob in obs]
             else:
                 a_t_stop = a_t == 0
@@ -483,6 +490,34 @@ class GMapObjectNavAgent(Seq2SeqAgent):
             # Early exit if all ended
             if ended.all():
                 break
+        
+        
+        '''Add FEEDTTA'''
+        # ===== FEEDTTA: episodic binary feedback =====
+        if train_rl and len(log_probs) > 0:
+            rewards = []
+
+            for i in range(batch_size):
+                final_vp = traj[i]['path'][-1][-1]
+                nav_success = final_vp in obs[i]['gt_end_vps']
+                obj_success = str(traj[i]['pred_objid']) == str(traj[i]['gt_obj_id'])
+                success = nav_success and obj_success
+                reward = 1.0 if success else -1.0
+                rewards.append(reward)
+
+            rewards = torch.tensor(rewards, dtype=torch.float32, device=device)
+
+            # [B, T]
+            log_probs_tensor = torch.stack(log_probs, dim=1)
+
+            # [B]
+            log_probs_sum = log_probs_tensor.sum(dim=1)
+
+            # REINFORCE with episodic feedback
+            policy_loss = -(rewards * log_probs_sum).mean()
+
+            self.loss = policy_loss
+            self.logs['RL_loss'].append(policy_loss.item())
 
         if train_ml is not None:
             ml_loss = ml_loss * train_ml / batch_size

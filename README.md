@@ -1,3 +1,37 @@
+# 🔥 FeedTTA on VLN-DUET (REVERIE)
+
+This repository is based on the original [VLN-DUET](https://arxiv.org/abs/2202.11742) implementation, with additional modifications for:
+
+- Test-Time Adaptation (FeedTTA)
+- Reward function redesign (progress-based reward)
+- Optional SGR (Stochastic Gradient Regularization)
+
+## 🚀 Key Contributions
+
+- Implemented online test-time adaptation (FeedTTA) for VLN
+- Fixed reward shaping (per-trajectory progress reward)
+- Improved adaptation stability (optional SGR)
+
+## 📊 Results (example)
+
+| Setting        | SR (%) |
+|----------------|--------|
+| Baseline       | 43.0   |
+| + FeedTTA      | 62.3   |
+
+## 🛠 How to Run (Kaggle)
+
+```bash
+PYTHONPATH=... python map_nav_src/reverie/main_nav_obj.py \
+  --test \
+  --tta_env_name val_unseen \
+  --tta_lr 3e-6
+
+```
+
+
+
+
 # Think Global, Act Local: Dual-scale GraphTransformer for Vision-and-Language Navigation
 
 This repository is the official implementation of [Think Global, Act Local: Dual-scale GraphTransformer for Vision-and-Language Navigation](https://arxiv.org/abs/2202.11742). 

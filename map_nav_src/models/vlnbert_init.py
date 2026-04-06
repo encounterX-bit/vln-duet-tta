@@ -18,7 +18,7 @@ def get_vlnbert_models(args, config=None):
     model_name_or_path = args.bert_ckpt_file
     new_ckpt_weights = {}
     if model_name_or_path is not None:
-        ckpt_weights = torch.load(model_name_or_path)
+        ckpt_weights = torch.load(model_name_or_path, map_location=torch.device("cuda" if torch.cuda.is_available() else "cpu"))
         for k, v in ckpt_weights.items():
             if k.startswith('module'):
                 k = k[7:]    
@@ -56,9 +56,16 @@ def get_vlnbert_models(args, config=None):
     vis_config.pred_head_dropout_prob = 0.1
     vis_config.use_lang2visn_attn = False
         
-    visual_model = GlocalTextPathNavCMT.from_pretrained(
-        pretrained_model_name_or_path=None, 
-        config=vis_config, 
-        state_dict=new_ckpt_weights)
-        
+    
+    
+    visual_model = GlocalTextPathNavCMT(vis_config)
+
+    if len(new_ckpt_weights) > 0:
+        missing_keys, unexpected_keys = visual_model.load_state_dict(
+            new_ckpt_weights, strict=False
+        )
+        print("Loaded VLN-BERT weights.")
+        print("Missing keys:", len(missing_keys))
+        print("Unexpected keys:", len(unexpected_keys))
+
     return visual_model
