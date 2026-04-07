@@ -260,8 +260,10 @@ def apply_sgr(module_list, p=0.05, alpha=-0.2):
             param.grad = torch.where(mask, grad_selected, grad_unselected)
 
 
+
 def feedtta_valid(args, train_env, val_envs, rank=-1):
     def _set_trainable_tta_params(model):
+        # freeze language / visual encoders, train the rest
         for _, p in model.named_parameters():
             p.requires_grad = False
 
@@ -280,22 +282,8 @@ def feedtta_valid(args, train_env, val_envs, rank=-1):
             lname = n.lower()
             if any(k in lname for k in frozen_keywords):
                 continue
-
-            # keep cross-modal / navigation / heads trainable
-            keep = (
-                'x_layers' in lname or
-                'cross' in lname or
-                'nav' in lname or
-                'sap' in lname or
-                'og_head' in lname or
-                'global' in lname or
-                'local' in lname or
-                'encoder.layer' in lname
-            )
-
-            if keep:
-                p.requires_grad = True
-                trainable_names.append(n)
+            p.requires_grad = True
+            trainable_names.append(n)
 
         return trainable_names
 
@@ -322,16 +310,16 @@ def feedtta_valid(args, train_env, val_envs, rank=-1):
     env = val_envs[target_env_name]
     agent.env = env
 
-    # safer defaults for online adaptation
+    # IMPORTANT:
+    # now tta_steps means update steps PER EPISODE
     tta_steps = int(getattr(args, 'tta_steps', 1))
     tta_lr = float(getattr(args, 'tta_lr', 1e-6))
     grad_clip = float(getattr(args, 'tta_grad_clip', 1.0))
     sgr_p = float(getattr(args, 'sgr_p', 0.0))
     sgr_alpha = float(getattr(args, 'sgr_alpha', -0.2))
-    rollback_on_worse = bool(getattr(args, 'tta_rollback_on_worse', True))
 
     if getattr(args, 'batch_size', None) != 1:
-        print('[WARN] FEEDTTA paper-style setup expects --batch_size 1')
+        print('[WARN] This online FEEDTTA patch expects --batch_size 1')
 
     trainable_names = _set_trainable_tta_params(agent.vln_bert)
     optimizer = _build_tta_optimizer(agent, tta_lr)
@@ -341,14 +329,13 @@ def feedtta_valid(args, train_env, val_envs, rank=-1):
             p.requires_grad = False
         agent.critic.eval()
 
-    print('\n===== FEEDTTA CONFIG =====')
+    print('\n===== ONLINE FEEDTTA CONFIG =====')
     print('tta_env_name =', target_env_name)
-    print('tta_steps    =', tta_steps)
-    print('tta_lr       =', tta_lr)
-    print('grad_clip    =', grad_clip)
-    print('sgr_p        =', sgr_p)
-    print('sgr_alpha    =', sgr_alpha)
-    print('rollback     =', rollback_on_worse)
+    print('tta_steps_per_episode =', tta_steps)
+    print('tta_lr =', tta_lr)
+    print('grad_clip =', grad_clip)
+    print('sgr_p =', sgr_p)
+    print('sgr_alpha =', sgr_alpha)
     print('trainable params in vln_bert =', len(trainable_names))
 
     if default_gpu:
@@ -356,7 +343,9 @@ def feedtta_valid(args, train_env, val_envs, rank=-1):
         with open(os.path.join(args.log_dir, 'feedtta_validation_args.json'), 'w') as outf:
             json.dump(vars(args), outf, indent=4)
 
+    # ---------- full-set baseline BEFORE any adaptation ----------
     print('\n===== BASELINE EVAL BEFORE ADAPTATION =====')
+    env.reset_epoch(shuffle=False)
     agent.vln_bert.eval()
     if hasattr(agent, 'critic'):
         agent.critic.eval()
@@ -382,91 +371,81 @@ def feedtta_valid(args, train_env, val_envs, rank=-1):
         )
     )
 
-    print('\n===== FEEDTTA ONLINE ADAPTATION =====')
-    device = next(agent.vln_bert.parameters()).device
-    best_state_dict = copy.deepcopy(agent.vln_bert.state_dict())
-    best_spl = float(score_summary_before['spl'])
+    # ---------- true online adaptation over the stream ----------
+    print('\n===== STREAMING ONLINE FEEDTTA =====')
+    env.reset_epoch(shuffle=False)
+    n_total = env.size()
 
-    agent.env.reset_epoch(shuffle=False)
+    online_preds_after = []
 
-    for k in range(tta_steps):
-        optimizer.zero_grad(set_to_none=True)
-        agent.logs = defaultdict(list)
+    for epi in range(n_total):
+        start_ix = env.ix
 
-        # keep trainable params active, but evaluation still uses argmax/no-dropout later
-        agent.vln_bert.train()
+        # adapt on the CURRENT episode only
+        for k in range(tta_steps):
+            env.ix = start_ix
+
+            optimizer.zero_grad(set_to_none=True)
+            agent.logs = defaultdict(list)
+
+            agent.vln_bert.train()
+            if hasattr(agent, 'critic'):
+                agent.critic.eval()
+
+            agent.feedback = 'sample'
+            device = next(agent.vln_bert.parameters()).device
+            agent.loss = torch.zeros([], dtype=torch.float32, device=device)
+
+            try:
+                _ = agent.rollout(train_ml=None, train_rl=True, reset=True)
+            except Exception as e:
+                print(f'[ONLINE FEEDTTA] epi {epi} step {k} skipped: {e}')
+                optimizer.zero_grad(set_to_none=True)
+                continue
+
+            rl_loss = agent.loss
+            if rl_loss is None:
+                optimizer.zero_grad(set_to_none=True)
+                continue
+
+            if not torch.is_tensor(rl_loss):
+                rl_loss = torch.tensor(rl_loss, dtype=torch.float32, device=device)
+
+            if (not torch.isfinite(rl_loss)) or (not rl_loss.requires_grad) or (rl_loss.grad_fn is None):
+                optimizer.zero_grad(set_to_none=True)
+                continue
+
+            rl_loss.backward()
+
+            if sgr_p > 0:
+                apply_sgr([agent.vln_bert], p=sgr_p, alpha=sgr_alpha)
+
+            torch.nn.utils.clip_grad_norm_(
+                [p for p in agent.vln_bert.parameters() if p.requires_grad],
+                grad_clip
+            )
+            optimizer.step()
+
+        # evaluate CURRENT episode after adapting on it
+        env.ix = start_ix
+        agent.vln_bert.eval()
         if hasattr(agent, 'critic'):
             agent.critic.eval()
 
-        agent.feedback = 'sample'
-        agent.loss = torch.zeros([], dtype=torch.float32, device=device)
+        agent.logs = defaultdict(list)
+        agent.test(use_dropout=False, feedback='argmax', iters=1)
+        pred_after = agent.get_results(detailed_output=args.detailed_output)
+        online_preds_after.extend(pred_after)
 
-        try:
-            _ = agent.rollout(train_ml=None, train_rl=True, reset=True)
-        except Exception as e:
-            print(f'[FEEDTTA] episode {k} skipped: rollout failed: {e}')
-            optimizer.zero_grad(set_to_none=True)
-            continue
+        # move to the next episode
+        env.ix = start_ix + 1
 
-        rl_loss = agent.loss
-        if rl_loss is None:
-            print(f'[FEEDTTA] episode {k} skipped: RL loss missing')
-            optimizer.zero_grad(set_to_none=True)
-            continue
+        if epi % 100 == 0 or epi == n_total - 1:
+            print(f'[ONLINE FEEDTTA] processed {epi+1}/{n_total}')
 
-        if not torch.is_tensor(rl_loss):
-            rl_loss = torch.tensor(rl_loss, dtype=torch.float32, device=device)
-
-        rl_loss_value = float(rl_loss.detach().item())
-        print(f'[FEEDTTA] episode {k} RL_loss = {rl_loss_value:.6f}')
-
-        if (not torch.isfinite(rl_loss)) or (not rl_loss.requires_grad) or (rl_loss.grad_fn is None):
-            print(f'[FEEDTTA] episode {k} skipped: invalid autograd state')
-            optimizer.zero_grad(set_to_none=True)
-            continue
-
-        prev_state_dict = copy.deepcopy(agent.vln_bert.state_dict())
-        rl_loss.backward()
-
-        if sgr_p > 0:
-            apply_sgr([agent.vln_bert], p=sgr_p, alpha=sgr_alpha)
-
-        torch.nn.utils.clip_grad_norm_(
-            [p for p in agent.vln_bert.parameters() if p.requires_grad],
-            grad_clip
-        )
-        optimizer.step()
-
-        if rollback_on_worse:
-            agent.vln_bert.eval()
-            if hasattr(agent, 'critic'):
-                agent.critic.eval()
-            agent.logs = defaultdict(list)
-            agent.test(use_dropout=False, feedback='argmax', iters=None)
-            preds_mid = agent.get_results(detailed_output=args.detailed_output)
-            score_summary_mid, _ = env.eval_metrics(preds_mid)
-            mid_spl = float(score_summary_mid['spl'])
-            mid_sr = float(score_summary_mid['sr'])
-            print(f'[FEEDTTA] episode {k} check: sr={mid_sr:.2f}, spl={mid_spl:.2f}')
-
-            if mid_spl >= best_spl:
-                best_spl = mid_spl
-                best_state_dict = copy.deepcopy(agent.vln_bert.state_dict())
-            else:
-                print(f'[FEEDTTA] episode {k} rollback: SPL {mid_spl:.2f} < best {best_spl:.2f}')
-                agent.vln_bert.load_state_dict(prev_state_dict)
-
-    agent.vln_bert.load_state_dict(best_state_dict)
-
-    print('\n===== EVAL AFTER ADAPTATION =====')
-    agent.vln_bert.eval()
-    if hasattr(agent, 'critic'):
-        agent.critic.eval()
-
-    agent.logs = defaultdict(list)
-    agent.test(use_dropout=False, feedback='argmax', iters=None)
-    preds_after = agent.get_results(detailed_output=args.detailed_output)
-    score_summary_after, _ = env.eval_metrics(preds_after)
+    # ---------- evaluate accumulated online-adapted predictions ----------
+    print('\n===== EVAL AFTER ONLINE ADAPTATION =====')
+    score_summary_after, _ = env.eval_metrics(online_preds_after)
 
     print(
         '[AFTER] Env name: %s, action_steps: %.2f, steps: %.2f, lengths: %.2f, '
@@ -489,7 +468,6 @@ def feedtta_valid(args, train_env, val_envs, rank=-1):
         before_v = score_summary_before[key]
         after_v = score_summary_after[key]
         print(f'{key}: {before_v:.2f} -> {after_v:.2f}  (delta {after_v - before_v:+.2f})')
-
 
 def main():
     args = parse_args()
