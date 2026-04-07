@@ -509,10 +509,10 @@ class GMapObjectNavAgent(Seq2SeqAgent):
                 obj_success = str(traj[i]['pred_objid']) == str(obs[i]['gt_obj_id'])
                 success = nav_success and obj_success
 
-                # rewards.append(1.0 if success else -1.0)
-                path_len = max(len(traj[i]['path']) - 1, 0)
-                reward = (1.0 if success else -1.0) - 0.03 * path_len
-                rewards.append(reward)
+                rewards.append(1.0 if success else -1.0)
+                # path_len = max(len(traj[i]['path']) - 1, 0)
+                # reward = (1.0 if success else -1.0) - 0.03 * path_len
+                # rewards.append(reward)
 
             rewards = torch.tensor(rewards, dtype=torch.float32, device=device)   # [B]
 
