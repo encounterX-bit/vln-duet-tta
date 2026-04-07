@@ -499,32 +499,85 @@ class GMapObjectNavAgent(Seq2SeqAgent):
             if ended.all():
                 break
 
-        # ===== FEEDTTA paper-style RL loss: episodic binary feedback =====
+        # # ===== FEEDTTA paper-style RL loss: episodic binary feedback =====
+        # if train_rl and len(log_probs) > 0:
+        #     rewards = []
+
+        #     for i in range(batch_size):
+        #         final_vp = traj[i]['path'][-1][-1]
+        #         nav_success = final_vp in obs[i]['gt_end_vps']
+        #         obj_success = str(traj[i]['pred_objid']) == str(obs[i]['gt_obj_id'])
+        #         success = nav_success and obj_success
+
+        #         rewards.append(1.0 if success else -1.0)
+        #         # path_len = max(len(traj[i]['path']) - 1, 0)
+        #         # reward = (1.0 if success else -1.0) - 0.03 * path_len
+        #         # rewards.append(reward)
+
+        #     rewards = torch.tensor(rewards, dtype=torch.float32, device=device)   # [B]
+
+        #     # [B, T]
+        #     log_probs_tensor = torch.stack(log_probs, dim=1)
+
+        #     # sum over the whole trajectory
+        #     log_probs_sum = log_probs_tensor.sum(dim=1)   # [B]
+
+        #     # IMPORTANT:
+        #     # batch_size=1 online TTA cannot use reward-centering baseline,
+        #     # otherwise advantage becomes exactly zero.
+        #     if not hasattr(self, '_feedtta_reward_baseline'):
+        #         self._feedtta_reward_baseline = 0.0
+
+        #     if batch_size == 1:
+        #         baseline = self._feedtta_reward_baseline
+        #         adv = rewards - baseline
+        #         self._feedtta_reward_baseline = 0.9 * self._feedtta_reward_baseline + 0.1 * float(rewards.mean().item())
+        #     else:
+        #         adv = rewards - rewards.mean()
+
+        #     rl_loss = -(adv * log_probs_sum).mean()
+        #     self.loss += rl_loss
+
+        #     self.logs['RL_loss'].append(float(rl_loss.item()))
+        # ===== FEEDTTA-style continuous episodic reward =====
         if train_rl and len(log_probs) > 0:
             rewards = []
 
             for i in range(batch_size):
+                scan = obs[i]['scan']
                 final_vp = traj[i]['path'][-1][-1]
-                nav_success = final_vp in obs[i]['gt_end_vps']
+                start_vp = traj[i]['path'][0][0]
+                goal_vps = obs[i]['gt_end_vps']
+
+                final_dist = min(
+                    self.env.shortest_distances[scan][final_vp][vp] for vp in goal_vps
+                )
+                start_dist = min(
+                    self.env.shortest_distances[scan][start_vp][vp] for vp in goal_vps
+                )
+
+                progress = (start_dist - final_dist) / max(start_dist, 1e-6)
+                progress = max(min(progress, 1.0), -1.0)
+
+                nav_success = final_vp in goal_vps
                 obj_success = str(traj[i]['pred_objid']) == str(obs[i]['gt_obj_id'])
-                success = nav_success and obj_success
 
-                rewards.append(1.0 if success else -1.0)
-                # path_len = max(len(traj[i]['path']) - 1, 0)
-                # reward = (1.0 if success else -1.0) - 0.03 * path_len
-                # rewards.append(reward)
+                path_len = max(len(traj[i]['path']) - 1, 0)
 
-            rewards = torch.tensor(rewards, dtype=torch.float32, device=device)   # [B]
+                reward = 0.8 * progress
 
-            # [B, T]
+                if nav_success:
+                    reward += 0.5
+                if obj_success:
+                    reward += 0.3
+
+                reward -= 0.005 * path_len
+                rewards.append(reward)
+
+            rewards = torch.tensor(rewards, dtype=torch.float32, device=device)
             log_probs_tensor = torch.stack(log_probs, dim=1)
+            log_probs_sum = log_probs_tensor.sum(dim=1)
 
-            # sum over the whole trajectory
-            log_probs_sum = log_probs_tensor.sum(dim=1)   # [B]
-
-            # IMPORTANT:
-            # batch_size=1 online TTA cannot use reward-centering baseline,
-            # otherwise advantage becomes exactly zero.
             if not hasattr(self, '_feedtta_reward_baseline'):
                 self._feedtta_reward_baseline = 0.0
 
@@ -539,7 +592,8 @@ class GMapObjectNavAgent(Seq2SeqAgent):
             self.loss += rl_loss
 
             self.logs['RL_loss'].append(float(rl_loss.item()))
-            
+            self.logs['reward'].append(float(rewards.mean().item()))
+                    
   
 
         if train_ml is not None:
