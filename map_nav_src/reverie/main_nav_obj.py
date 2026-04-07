@@ -266,28 +266,31 @@ def feedtta_valid(args, train_env, val_envs, rank=-1):
             p.requires_grad = False
 
         trainable_names = []
+        frozen_keywords = [
+            'lang_encoder',
+            'img_embeddings',
+            'vision_encoder',
+            'vis_encoder',
+            'pano_encoder',
+            'panorama',
+            'embeddings'
+        ]
+
         for n, p in model.named_parameters():
             lname = n.lower()
-
-            # freeze language / pure visual encoders
-            if (
-                ('lang_encoder' in lname) or
-                ('img_embeddings' in lname) or
-                ('vision_encoder' in lname) or
-                ('vis_encoder' in lname) or
-                ('pano_encoder' in lname) or
-                ('panorama' in lname)
-            ):
+            if any(k in lname for k in frozen_keywords):
                 continue
 
-            # open cross-modal and heads
+            # keep cross-modal / navigation / heads trainable
             keep = (
-                ('x_layers' in lname) or
-                ('cross' in lname) or
-                ('sap_fuse' in lname) or
-                ('local_sap_head' in lname) or
-                ('global_sap_head' in lname) or
-                ('og_head' in lname)
+                'x_layers' in lname or
+                'cross' in lname or
+                'nav' in lname or
+                'sap' in lname or
+                'og_head' in lname or
+                'global' in lname or
+                'local' in lname or
+                'encoder.layer' in lname
             )
 
             if keep:

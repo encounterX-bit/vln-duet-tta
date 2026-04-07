@@ -515,16 +515,26 @@ class GMapObjectNavAgent(Seq2SeqAgent):
 
             # [B, T]
             log_probs_tensor = torch.stack(log_probs, dim=1)
+
+            # sum over the whole trajectory
             log_probs_sum = log_probs_tensor.sum(dim=1)   # [B]
 
-            # ===== FIX: batch_size=1 不要减 mean =====
+            # IMPORTANT:
+            # batch_size=1 online TTA cannot use reward-centering baseline,
+            # otherwise advantage becomes exactly zero.
+            if not hasattr(self, '_feedtta_reward_baseline'):
+                self._feedtta_reward_baseline = 0.0
+
             if batch_size == 1:
-                adv = rewards
+                baseline = self._feedtta_reward_baseline
+                adv = rewards - baseline
+                self._feedtta_reward_baseline = 0.9 * self._feedtta_reward_baseline + 0.1 * float(rewards.mean().item())
             else:
                 adv = rewards - rewards.mean()
 
             rl_loss = -(adv * log_probs_sum).mean()
             self.loss += rl_loss
+
             self.logs['RL_loss'].append(float(rl_loss.item()))
             
   
