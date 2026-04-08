@@ -499,47 +499,10 @@ class GMapObjectNavAgent(Seq2SeqAgent):
             if ended.all():
                 break
 
-        # # ===== FEEDTTA paper-style RL loss: episodic binary feedback =====
-        # if train_rl and len(log_probs) > 0:
-        #     rewards = []
-
-        #     for i in range(batch_size):
-        #         final_vp = traj[i]['path'][-1][-1]
-        #         nav_success = final_vp in obs[i]['gt_end_vps']
-        #         obj_success = str(traj[i]['pred_objid']) == str(obs[i]['gt_obj_id'])
-        #         success = nav_success and obj_success
-
-        #         rewards.append(1.0 if success else -1.0)
-        #         # path_len = max(len(traj[i]['path']) - 1, 0)
-        #         # reward = (1.0 if success else -1.0) - 0.03 * path_len
-        #         # rewards.append(reward)
-
-        #     rewards = torch.tensor(rewards, dtype=torch.float32, device=device)   # [B]
-
-        #     # [B, T]
-        #     log_probs_tensor = torch.stack(log_probs, dim=1)
-
-        #     # sum over the whole trajectory
-        #     log_probs_sum = log_probs_tensor.sum(dim=1)   # [B]
-
-        #     # IMPORTANT:
-        #     # batch_size=1 online TTA cannot use reward-centering baseline,
-        #     # otherwise advantage becomes exactly zero.
-        #     if not hasattr(self, '_feedtta_reward_baseline'):
-        #         self._feedtta_reward_baseline = 0.0
-
-        #     if batch_size == 1:
-        #         baseline = self._feedtta_reward_baseline
-        #         adv = rewards - baseline
-        #         self._feedtta_reward_baseline = 0.9 * self._feedtta_reward_baseline + 0.1 * float(rewards.mean().item())
-        #     else:
-        #         adv = rewards - rewards.mean()
-
-        #     rl_loss = -(adv * log_probs_sum).mean()
-        #     self.loss += rl_loss
-
-        #     self.logs['RL_loss'].append(float(rl_loss.item()))
+       
         # ===== FEEDTTA-style continuous episodic reward =====
+        # RL policy gradient update at test time 
+        # using a continuous reward instead of +-1
         if train_rl and len(log_probs) > 0:
             rewards = []
 
@@ -562,15 +525,15 @@ class GMapObjectNavAgent(Seq2SeqAgent):
                 nav_success = final_vp in goal_vps
                 obj_success = str(traj[i]['pred_objid']) == str(obs[i]['gt_obj_id'])
 
-                path_len = max(len(traj[i]['path']) - 1, 0)
-
+                path_len = max(len(traj[i]['path']) - 1, 0) # penalise long traj
+            
                 reward = 0.8 * progress
-
+                # Add success bouns
                 if nav_success:
                     reward += 0.5
                 if obj_success:
                     reward += 0.3
-
+                #penality for long paths
                 reward -= 0.005 * path_len
                 rewards.append(reward)
 

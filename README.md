@@ -1,112 +1,104 @@
-# 🔥 FeedTTA on VLN-DUET (REVERIE)
+# FeedTTA + Reward Shaping on VLN-DUET (REVERIE)
 
-This repository extends the original **VLN-DUET** model with **FeedTTA-style online test-time adaptation** for Vision-and-Language Navigation (VLN), evaluated on the **REVERIE** benchmark.
+This project extends **VLN-DUET** with **online test-time adaptation (FeedTTA)** for Vision-and-Language Navigation (VLN), evaluated on the **REVERIE benchmark**.
 
----
+We further improve adaptation by introducing **continuous reward shaping** and **gradient regularization (SGR)**, leading to significantly improved generalization in unseen environments.
 
-## 🚀 Overview
-
-We implement **FeedTTA-style test-time adaptation**, where the agent **adapts online during inference** using **episodic binary feedback** (success / failure).
-
-Unlike standard VLN evaluation (static model), this approach allows the agent to:
-
-- Learn **during navigation in unseen environments**
-- Improve performance **without retraining on training data**
-- Adapt dynamically to **environment-specific distributions**
+Results and detailed logs are provided in `feedtta-report.ipynb`.
 
 ---
 
-## 🧠 Method (FeedTTA-style Adaptation)
+## Key Contributions
 
-Our implementation follows the core principles of FeedTTA:
-
-### 1. Episodic Feedback (Core)
-
-After each navigation episode:
-
-- ✅ Success → reward = +1  
-- ❌ Failure → reward = -1  
-
-No ground-truth supervision is used during test time.
+### 1. FeedTTA-style Online Adaptation
+- Performs **policy updates during inference** via REINFORCE  
+- Requires **no access to training data at test time**    
 
 ---
 
-### 2. Online Policy Update
+### 2. Continuous Progress-Based Reward (Main Contribution)
 
-During rollout:
+Instead of sparse reward (+1 / -1), we design a **dense reward signal**:
 
-- actions are sampled (`feedback='sample'`)
-- log-probabilities are collected
+- Reward = **distance reduction toward goal**
+- + a small step penalty to discourage inefficient trajectories  
+- + a success bonus for correct navigation and grounding  
 
-After episode:
-
-- apply **REINFORCE-style update**
-- update model parameters online
-
----
-
-### 3. Stability vs Plasticity
-
-To prevent catastrophic drift during test-time learning:
-
-- Advantage normalization
-- Optional entropy regularization
-- Optional gradient regularization (SGR-style)
+This design provides:
+- more stable learning signal
+- better credit assignment across long trajectories  
+- improved adaptation performance  
 
 ---
 
-## 🔧 Our Extensions
+### 3. Gradient Regularization (SGR)
 
-In addition to the base FeedTTA-style setup, we introduce:
-
-### ✅ Progress-Based Reward (Optional)
-
-To improve learning signal:
-
-- Reward = distance reduction toward goal
-- + success bonus (navigation + object grounding)
-
-This improves convergence stability on REVERIE.
-
-> ⚠️ Note: This is an extension, not part of original FeedTTA formulation.
+Gradient scaling, controlled by `sgr_p` and `sgr_alpha`, were used to stablise test-time adpation and balance plasticity and stability.
 
 ---
 
-### ✅ Gradient Regularization (SGR-style, Optional)
+## Results (REVERIE val_unseen)
 
-We add a lightweight gradient control mechanism:
+### Performance Improvement
 
-- Scale gradients differently for:
-  - successful episodes
-  - failed episodes
-
-Helps balance:
-
-- **plasticity** (adaptation)
-- **stability** (retain pretrained knowledge)
-
----
-
-## 📊 Results (Example)
-
-| Setting        | SR (%) |
-|----------------|--------|
-| Baseline       | 43.0   |
-| + FeedTTA      | 62.3   |
-
-> Results may vary depending on:
-> - TTA steps
-> - learning rate
-> - reward design
+| Metric     | Before | After | Δ |
+|------------|--------|-------|---|
+| SR         | 43.00  | 59.10 | **+16.10** |
+| SPL        | 23.07  | 37.42 | +14.34 |
+| Oracle SR  | 56.43  | 67.74 | +11.30 |
+| RGS        | 28.46  | 39.34 | +10.88 |
+| RGSPL      | 15.24  | 24.42 | +9.19 |
 
 ---
 
-## 🛠 Setup
+### Trajectory Efficiency
 
-### 1. Install Matterport3D Simulator
+| Metric  | Before | After | Δ |
+|--------|--------|-------|---|
+| Steps  | 16.21  | 14.20 | -2.01 |
+| Length | 31.36  | 27.37 | -3.99 |
 
-Follow:
+The adapted agent is both **more accurate** and **more efficient**.
+
+---
+
+## Setup
+
+
+Install Matterport3D Simulator:
+
 https://github.com/peteanderson80/Matterport3DSimulator
 
+## Run
+
 ```bash
-export PYTHONPATH=Matterport3DSimulator/build:$PYTHONPATH
+LD_LIBRARY_PATH=./Matterport3DSimulator/build:$LD_LIBRARY_PATH \
+PYTHONPATH=./map_nav_src:./Matterport3DSimulator/build:$PYTHONPATH \
+CUDA_VISIBLE_DEVICES=0 \
+python map_nav_src/reverie/main_nav_obj.py \
+  --root_dir ./datasets \
+  --dataset reverie \
+  --features vitbase \
+  --image_feat_size 768 \
+  --obj_feat_size 768 \
+  --output_dir ./outputs/reverie_feedtta \
+  --resume_file ./datasets/REVERIE/trained_models/best_val_unseen \
+  --test \
+  --batch_size 1 \
+  --tta_env_name val_unseen \
+  --tta_steps 2 \
+  --tta_lr 1e-5 \
+  --sgr_p 0.1 \
+  --sgr_alpha -0.2 \
+  --tta_grad_clip 1.0
+  ```
+
+## Key Parameters
+
+| Parameter        | Description |
+|------------------|------------|
+| tta_steps        | Number of adaptation steps per episode |
+| tta_lr           | Test-time learning rate |
+| sgr_p            | Probability of applying gradient scaling |
+| sgr_alpha        | Gradient scaling factor |
+| tta_grad_clip    | Gradient clipping for stability |

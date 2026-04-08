@@ -224,7 +224,6 @@ class GMapNavAgent(Seq2SeqAgent):
                     min_idx, min_dist = self.args.ignoreid, float('inf')
                     for j, vpid in enumerate(vpids[i]):
                         if j > 0 and ((visited_masks is None) or (not visited_masks[i][j])):
-                            # dist = min([self.env.shortest_distances[scan][vpid][end_vp] for end_vp in ob['gt_end_vps']])
                             dist = self.env.shortest_distances[scan][vpid][ob['gt_path'][-1]] \
                                     + self.env.shortest_distances[scan][cur_vp][vpid]
                             if dist < min_dist:
@@ -273,7 +272,6 @@ class GMapNavAgent(Seq2SeqAgent):
                                         threshold=3.0
                                     )['nDTW']
                                 elif self.args.expert_policy == 'spl':
-                                    # dist = min([self.env.shortest_distances[scan][vpid][end_vp] for end_vp in ob['gt_end_vps']])
                                     dist = self.env.shortest_distances[scan][vpid][ob['gt_path'][-1]] \
                                             + self.env.shortest_distances[scan][cur_vp][vpid]
                                 if dist < min_dist:
@@ -404,10 +402,6 @@ class GMapNavAgent(Seq2SeqAgent):
             if train_ml is not None:
                 # Supervised training
                 if self.args.dataset == 'r2r':
-                    # nav_targets = self._teacher_action(
-                    #     obs, nav_vpids, ended, 
-                    #     visited_masks=nav_inputs['gmap_visited_masks'] if self.args.fusion != 'local' else None
-                    # )
                     nav_targets = self._teacher_action_r4r(
                         obs, nav_vpids, ended, 
                         visited_masks=nav_inputs['gmap_visited_masks'] if self.args.fusion != 'local' else None,
@@ -419,9 +413,8 @@ class GMapNavAgent(Seq2SeqAgent):
                         visited_masks=nav_inputs['gmap_visited_masks'] if self.args.fusion != 'local' else None,
                         imitation_learning=(self.feedback=='teacher'), t=t, traj=traj
                     )
-                # print(t, nav_logits, nav_targets)
+            
                 ml_loss += self.criterion(nav_logits, nav_targets)
-                # print(t, 'ml_loss', ml_loss.item(), self.criterion(nav_logits, nav_targets).item())
                                                  
             # Determinate the next navigation viewpoint
             if self.feedback == 'teacher':
